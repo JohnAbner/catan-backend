@@ -5,6 +5,11 @@ const { Server } = require("socket.io");
 const app = express();
 const server = http.createServer(app);
 
+// --- NEW: Health Check Route ---
+app.get('/', (req, res) => {
+    res.send('Catan Backend is Live and Running!');
+});
+
 // Allow requests from your static website
 const io = new Server(server, {
   cors: {
@@ -16,8 +21,6 @@ const io = new Server(server, {
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
-    // --- GAME LOGIC GOES HERE ---
-    // Example: broadcasting actions to all other players
     socket.on('gameAction', (data) => {
         io.emit('gameAction', data); 
     });
@@ -27,7 +30,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Render automatically assigns a PORT environment variable
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Backend listening on port ${PORT}`);
