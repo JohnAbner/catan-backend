@@ -5,10 +5,7 @@ const { Server } = require("socket.io");
 const app = express();
 const server = http.createServer(app);
 
-// Health check route
-app.get('/', (req, res) => {
-    res.send('Catan Backend is Live and Running!');
-});
+app.get('/', (req, res) => { res.send('Catan Backend is Live and Running!'); });
 
 const io = new Server(server, {
   cors: {
@@ -17,57 +14,74 @@ const io = new Server(server, {
   }
 });
 
-// --- GAME LOBBY STATE ---
 let connectedPlayers = 0;
 let currentBoardState = null;
+let activeTrade = null; // Tracks the current trade offer
+let tradeTimeout = null;
 
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
-
-    // 1. ASSIGN PLAYER NUMBER
-    // Increment the player count and assign it to the newly connected user
     connectedPlayers++;
     const playerNumber = connectedPlayers;
     socket.emit('assignPlayer', playerNumber);
-    console.log(`Assigned Player ${playerNumber} to ${socket.id}`);
 
-    // If a player refreshes or joins late after the game started, send them the board
-    if (currentBoardState) {
-        socket.emit('syncBoard', currentBoardState);
-    }
+    if (currentBoardState) socket.emit('syncBoard', currentBoardState);
 
-    // 2. HOST STARTS GAME
-    // Listen for the Host (Player 1) generating the board
     socket.on('initBoard', (data) => {
-        console.log('Host initialized the board. Syncing to network...');
-        currentBoardState = data; // Save the board state on the server
-        
-        // Broadcast the board to everyone EXCEPT the Host (since the Host already rendered it)
+        currentBoardState = data;
         socket.broadcast.emit('syncBoard', data); 
     });
 
-    // 3. IN-GAME ACTIONS
-    // When a player rolls dice, builds, or moves the robber
     socket.on('gameAction', (data) => {
-        // Relay the action to all OTHER players
+        // Relay standard actions
         socket.broadcast.emit('gameAction', data); 
     });
 
-    // 4. DISCONNECT LOGIC
-    socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-        connectedPlayers--;
-        if (connectedPlayers < 0) connectedPlayers = 0;
+    // --- NEW: TRADE NEGOTIATION SYSTEM ---
+    socket.on('offerTrade', (tradeData) => {
+        // tradeData: { offerer, giveRes, giveAmt, recRes, recAmt, id }
+        activeTrade = tradeData;
+        socket.broadcast.emit('tradeOffered', activeTrade);
         
-        // If everyone leaves the server, clear the board state for the next game
-        if (connectedPlayers === 0) {
-            console.log('Lobby empty. Resetting board.');
-            currentBoardState = null;
+        // 15-second timeout
+        if(tradeTimeout) clearTimeout(tradeTimeout);
+        tradeTimeout = setTimeout(() => {
+            if (activeTrade && activeTrade.id === tradeData.id) {
+                io.emit('tradeTimeout', activeTrade.id);
+                activeTrade = null;
+            }
+        }, 15000);
+    });
+
+    socket.on('acceptTrade', (tradeId, acceptorId) => {
+        if (activeTrade && activeTrade.id === tradeId) {
+            clearTimeout(tradeTimeout);
+            // Broadcast the successful trade to everyone
+            io.emit('tradeExecuted', { 
+                offerer: activeTrade.offerer, 
+                acceptor: acceptorId, 
+                giveRes: activeTrade.giveRes, 
+                recRes: activeTrade.recRes 
+            });
+            activeTrade = null;
         }
+    });
+
+    // --- NEW: MONOPOLY SYSTEM ---
+    socket.on('playMonopoly', (data) => {
+        // Ask all other players to report how much of the resource they have
+        socket.broadcast.emit('monopolyDemand', data);
+    });
+
+    socket.on('monopolyYield', (data) => {
+        // Route the stolen resources back to the caster
+        io.emit('monopolyCollect', data);
+    });
+
+    socket.on('disconnect', () => {
+        connectedPlayers--;
+        if (connectedPlayers <= 0) { connectedPlayers = 0; currentBoardState = null; activeTrade = null; }
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Backend listening on port ${PORT}`);
-});
+server.listen(PORT, () => { console.log(`Backend listening on port ${PORT}`); });
