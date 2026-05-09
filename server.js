@@ -50,6 +50,7 @@ function resetGameState() {
   setupIndex = 0;
   isSetupPhase = true;
   robberHexId = null;
+  currentBoardState = null; // Also clear board state on full reset
 }
 
 io.on('connection', (socket) => {
@@ -60,15 +61,22 @@ io.on('connection', (socket) => {
     if (currentBoardState) {
       socket.emit('syncBoard', currentBoardState);
       socket.emit('syncAchievements', gameAchievements);
-      // Replay build history so late-joiners see the board state
+      
+      // NEW: Always replay history to ensure late joiners and refreshers are in sync
       if (buildHistory.length > 0) {
-        socket.emit('replayBuilds', buildHistory);
+        socket.emit('replayBuilds', { history: buildHistory, setupState: { isSetupPhase, setupIndex } });
       }
     }
 
     socket.on('initBoard', (data) => {
+        resetGameState(); // Ensure a clean slate before starting a new board
         currentBoardState = data;
-        resetGameState();
+        // The robber's initial position is part of the initial board state now
+        const desertHex = data.blueprint.findIndex(hex => hex.type === 'desert');
+        if(desertHex !== -1) {
+            robberHexId = desertHex;
+            buildHistory.push({ type: 'MOVE_ROBBER', hexId: robberHexId }); // Log initial robber position
+        }
         socket.broadcast.emit('syncBoard', data);
     });
 
@@ -76,12 +84,27 @@ io.on('connection', (socket) => {
         // Track builds for reconnect replay
         if (data.type === 'BUILD') {
           buildHistory.push(data);
+          // NEW: Track setup phase state changes
+          if(isSetupPhase) {
+            if(data.buildType === 'road') {
+              setupIndex++;
+              if(setupIndex >= (currentBoardState?.numPlayers || 4) * 2) {
+                isSetupPhase = false;
+                activePlayer = 1;
+              }
+            }
+          }
         }
         // Track robber position
         if (data.type === 'MOVE_ROBBER') {
           robberHexId = data.hexId;
+          // To ensure robber state is re-playable, only add it if it's a new position
+          const lastAction = buildHistory[buildHistory.length - 1];
+          if (!lastAction || lastAction.type !== 'MOVE_ROBBER' || lastAction.hexId !== data.hexId) {
+            buildHistory.push(data);
+          }
         }
-        // Track setup/turn state
+        // Track turn progression
         if (data.type === 'END_TURN') {
           activePlayer = (activePlayer % (currentBoardState?.numPlayers || 4)) + 1;
         }
@@ -180,7 +203,6 @@ io.on('connection', (socket) => {
         connectedPlayers--;
         if (connectedPlayers <= 0) {
             connectedPlayers = 0;
-            currentBoardState = null;
             activeTrade = null;
             resetGameState();
         }
