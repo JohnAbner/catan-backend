@@ -191,15 +191,34 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('monopolyDemand', data);
     });
 
+    // --- NEW: DISCARD HANDLING ---
+    socket.on('startDiscard', (playersToDiscard) => {
+        discardQueue = playersToDiscard;
+        // If the queue is already empty, proceed immediately
+        if (discardQueue.length === 0) {
+            io.emit('allDiscardsComplete');
+        }
+    });
+
+
     socket.on('monopolyYield', (data) => {
         io.emit('monopolyCollect', data);
     });
 
     // --- DISCARD ---
     socket.on('discardCards', (data) => {
-        // Broadcast so all clients update that player's inventory
+        // First, inform all clients of the discard for UI updates
         socket.broadcast.emit('gameAction', { type: 'DISCARD_CARDS', player: data.player, discards: data.discards });
+
+        // Then, manage the master queue
+        discardQueue = discardQueue.filter(p => p !== data.player);
+
+        // If the master queue is now empty, inform all clients
+        if (discardQueue.length === 0) {
+            io.emit('allDiscardsComplete');
+        }
     });
+
 
     socket.on('disconnect', () => {
         connectedPlayers--;
