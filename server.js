@@ -51,6 +51,7 @@ function resetGameState() {
   setupIndex = 0;
   isSetupPhase = true;
   robberHexId = null;
+  discardQueue = [];
   currentBoardState = null; // Also clear board state on full reset
 }
 
