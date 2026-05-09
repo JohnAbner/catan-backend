@@ -37,6 +37,42 @@ let isSetupPhase = true;
 let robberHexId = null;
 let discardQueue = [];
 
+// Server-side geometry helpers
+const hexLayout = [3, 4, 5, 4, 3];
+const vertexMap = {}; // Will be built once
+
+function getVerticesForHex(hexId) {
+    if (Object.keys(vertexMap).length === 0) {
+        // This logic only needs to run once per game to map the board geometry
+        let hexCounter = 0;
+        let vertexCounter = 0;
+        const vertexCoords = new Map();
+        
+        hexLayout.forEach(count => {
+            for (let i = 0; i < count; i++) {
+                const hex = { id: hexCounter, cx: (i * 108) + (5 - count) * 54, cy: hexCounter * 28 }; // Simplified coords
+                const corners = [
+                    { x: hex.cx, y: hex.cy - 57.5 }, { x: hex.cx + 50, y: hex.cy - 28.75 },
+                    { x: hex.cx + 50, y: hex.cy + 28.75 }, { x: hex.cx, y: hex.cy + 57.5 },
+                    { x: hex.cx - 50, y: hex.cy + 28.75 }, { x: hex.cx - 50, y: hex.cy - 28.75 }
+                ];
+
+                vertexMap[hex.id] = [];
+                corners.forEach(c => {
+                    const key = `${Math.round(c.x)},${Math.round(c.y)}`;
+                    if (!vertexCoords.has(key)) {
+                        vertexCoords.set(key, vertexCounter++);
+                    }
+                    const vertexIndex = vertexCoords.get(key);
+                    if (!vertexMap[hex.id].includes(vertexIndex)) {
+                        vertexMap[hex.id].push(vertexIndex);
+                    }
+                });
+                hexCounter++;
+            }
+        });
+    }
+
 function resetGameState() {
   gameAchievements = {
     longestRoadHolder: null,
@@ -111,9 +147,65 @@ io.on('connection', (socket) => {
           activePlayer = (activePlayer % (currentBoardState?.numPlayers || 4)) + 1;
         }
         // Track played knights
-        if (data.type === 'PLAY_KNIGHT' && data.playerOwner) {
+               if (data.type === 'PLAY_KNIGHT' && data.playerOwner) {
           if (!gameAchievements.playedKnights[data.playerOwner]) gameAchievements.playedKnights[data.playerOwner] = 0;
           gameAchievements.playedKnights[data.playerOwner]++;
+        }
+        // NEW: Centralized Robber and Steal Logic
+        else if (data.type === 'MOVE_ROBBER_AND_STEAL') {
+            const { stealer, hexId } = data;
+
+            // 1. Move the Robber
+            robberHexId = hexId;
+            const lastAction = buildHistory[buildHistory.length - 1];
+            if (!lastAction || lastAction.type !== 'MOVE_ROBBER' || lastAction.hexId !== hexId) {
+                buildHistory.push({ type: 'MOVE_ROBBER', hexId });
+            }
+            io.emit('gameAction', { type: 'MOVE_ROBBER', hexId });
+
+            // 2. Determine who can be stolen from
+            const verticesOnHex = getVerticesForHex(hexId); // We need to create this helper function
+            let potentialVictims = new Set();
+            verticesOnHex.forEach(v => {
+                if (v.player && v.player !== stealer) {
+                    const totalRes = Object.values(playerInventories[v.player]).reduce((s, c) => s + c, 0);
+                    if (totalRes > 0) {
+                        potentialVictims.add(v.player);
+                    }
+                }
+            });
+
+            const victimList = Array.from(potentialVictims);
+            let stealMsg = `Robber moved to hex ${hexId}. No one to steal from.`;
+
+            // 3. If there's a victim, perform the steal
+            if (victimList.length > 0) {
+                const victim = victimList[Math.floor(Math.random() * victimList.length)];
+                
+                // Create a flat array of the victim's resources
+                let resourcePool = [];
+                RESOURCES.forEach(res => {
+                    for (let i = 0; i < playerInventories[victim][res]; i++) {
+                        resourcePool.push(res);
+                    }
+                });
+
+                if (resourcePool.length > 0) {
+                    const stolenResource = resourcePool[Math.floor(Math.random() * resourcePool.length)];
+                    
+                    // Update server inventories
+                    playerInventories[victim][stolenResource]--;
+                    playerInventories[stealer][stolenResource]++;
+
+                    // Emit the steal action so clients can update
+                    io.emit('gameAction', { type: 'STEAL', stealer, victim, resource: stolenResource });
+                    stealMsg = `Player ${stealer} stole from Player ${victim}!`;
+                }
+            }
+            
+            // 4. End the robber phase for everyone
+            io.emit('gameAction', { type: 'END_ROBBER_PHASE', msg: stealMsg });
+            return; // IMPORTANT: Prevent fall-through to the general broadcast at the end
         }
         // Relay to all other players
         socket.broadcast.emit('gameAction', data);
