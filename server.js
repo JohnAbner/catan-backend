@@ -35,6 +35,7 @@ let activePlayer = 1;
 let setupIndex = 0;
 let isSetupPhase = true;
 let robberHexId = null;
+let discardQueue = [];
 
 function resetGameState() {
   gameAchievements = {
