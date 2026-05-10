@@ -581,7 +581,9 @@ io.on('connection', (socket) => {
         if (isSetup) {
           // Record the house node so the next road knows where to attach
           gState.lastSetupHouseNodeIndex = nodeIndex;
-          // Advance to the road step (next entry in the queue is always the road for same player)
+          // Emit the BUILD event FIRST so all clients render the house on the board
+          emitToGame(game, 'gameAction', { type: 'BUILD', nodeIndex, nodeType, buildType, playerOwner: p, isFree: true });
+          // Now advance to the road step — turnState will carry lastSetupHouseNodeIndex
           advanceSetup(game);
         } else {
           emitToGame(game, 'gameAction', { type: 'BUILD', nodeIndex, nodeType, buildType, playerOwner: p, isFree });
